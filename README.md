@@ -2,46 +2,58 @@
 
 ## 项目概述
 
-本项目实现了一个极简的 Agent Gateway（智能体网关）控制面协议，用于处理智能体与客户端之间的通信。项目包含网关服务、客户端实现和相关测试工具，旨在验证协议的正确性和系统的稳定性。
+本项目实现了一个极简的 Agent Gateway（智能体网关）控制面协议，用于处理智能体与客户端之间的通信。
+当前仓库同时保留两套网关实现：
+
+- `agent.gw.Main`：基线实现（初始版本）
+- `agent.gw.Gateway`：优化实现（增强背压、并发安全与入口保护）
+
+项目包含网关服务、客户端实现、负载测试工具和指标脚本，用于验证协议正确性与系统稳定性。
 
 ## 项目结构
 
-```
+```text
 CSD-Lab-master/
 ├── src/
 │   └── main/
 │       └── java/
-│           ├── agent/
-│               ├── client/          # 客户端实现
-│               │   ├── client.java              # 原始客户端
-│               │   ├── NormalClient.java        # 正常客户端
-│               │   ├── SlowClient.java          # 慢客户端
-│               │   ├── LoadTestClient.java      # 负载测试客户端
-│               │   ├── WebSocketClientHandler.java  # WebSocket客户端处理器
-│               │   └── SlowWebSocketClientHandler.java  # 慢WebSocket客户端处理器
-│               ├── gw/             # 网关实现
-│               │   └── Main.java               # 网关主服务
-│               └── mock/           # 模拟运行时
-│                   └── TokenGen.java           # 令牌生成器
-├── PROTOCOL_SPEC.md       # 协议规格文档
-├── CONCURRENCY_MODEL.md    # 并发模型图
-├── EVIDENCE_CHAIN.md       # 证据链
-├── VERIFICATION_RECORD.md  # 验证记录
-├── start-server.bat        # 启动服务脚本
-├── run-normal-client.bat   # 运行正常客户端脚本
-├── run-slow-client.bat     # 运行慢客户端脚本
-├── run-load-test.bat       # 运行负载测试脚本
-├── pom.xml                 # Maven配置文件
-└── README.md               # 项目说明
+│           └── agent/
+│               ├── client/
+│               │   ├── client.java
+│               │   ├── NormalClient.java
+│               │   ├── SlowClient.java
+│               │   ├── LoadTestClient.java
+│               │   ├── WebSocketClientHandler.java
+│               │   └── SlowWebSocketClientHandler.java
+│               ├── gw/
+│               │   ├── Main.java                 # 基线网关
+│               │   └── Gateway.java              # 优化网关
+│               └── mock/
+│                   └── TokenGen.java
+├── scripts/
+│   └── calc_metrics.py                           # 指标统计脚本
+├── PROTOCOL_SPEC.md
+├── CONCURRENCY_MODEL.md
+├── EVIDENCE_CHAIN.md
+├── EVIDENCE_CHAIN_2.md
+├── VERIFICATION_RECORD.md
+├── VERIFICATION_RECORD_2.md
+├── start-server.bat                              # 启动 Main
+├── start-new-server.bat                          # 启动 Gateway
+├── run-normal-client.bat
+├── run-slow-client.bat
+├── run-load-test.bat
+├── pom.xml
+└── README.md
 ```
 
 ## 核心功能
 
-1. **协议实现**：实现了START/TOKEN*/DONE/ERROR的最小消息集
-2. **会话路由**：基于轮询的会话路由机制，将请求分配到工作线程
-3. **背压策略**：基于有界队列的背压策略，防止系统资源耗尽
-4. **可观测性**：详细的日志记录和指标收集
-5. **并发处理**：使用线程池并发处理多个请求
+1. **协议实现**：实现 START/TOKEN*/DONE/ERROR 最小消息集
+2. **会话路由**：请求路由到工作线程，支持并发处理
+3. **背压策略**：慢客户端场景下的有界队列与过载保护
+4. **可观测性**：结构化日志（`route`/`token`/`error`）与指标统计
+5. **双版本对比**：支持 Main 与 Gateway 两个版本并行验证
 
 ## 技术栈
 
@@ -49,76 +61,84 @@ CSD-Lab-master/
 - **网络框架**：Netty 4.1.96.Final
 - **JSON处理**：Jackson 2.15.2
 - **构建工具**：Maven 3.8.6
+- **指标脚本**：Python 3（`scripts/calc_metrics.py`）
 
 ## 使用方法
 
-### 1. 启动网关服务
+### 1) 编译项目
 
-```bash
-./start-server.bat
+```powershell
+mvn -q -DskipTests compile
 ```
 
-### 2. 运行正常客户端
+### 2) 启动网关服务
 
-```bash
-./run-normal-client.bat
+- 启动基线版本（Main）：
+
+```powershell
+.\start-server.bat
 ```
 
-### 3. 运行慢客户端
+- 启动优化版本（Gateway）：
 
-```bash
-./run-slow-client.bat
+```powershell
+.\start-new-server.bat
 ```
 
-### 4. 运行负载测试
+### 3) 运行客户端
 
-```bash
-./run-load-test.bat
+```powershell
+.\run-normal-client.bat
+.\run-slow-client.bat
+.\run-load-test.bat
 ```
 
-## 协议规格
+### 4) 计算验证指标（从 server.log 生成指标表）
 
-详细的协议规格请参考 [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md) 文件。
+```powershell
+py -3 .\scripts\calc_metrics.py .\logs\server.log
+```
 
-## 并发模型
+如果日志来自优化网关且队列容量为 32，可显式指定：
 
-详细的并发模型请参考 [CONCURRENCY_MODEL.md](CONCURRENCY_MODEL.md) 文件。
+```powershell
+py -3 .\scripts\calc_metrics.py .\logs\server_new.log --queue-limit 32
+```
 
-## 证据链
+## 文档索引
 
-详细的证据链请参考 [EVIDENCE_CHAIN.md](EVIDENCE_CHAIN.md) 文件。
-
-## 验证记录
-
-详细的验证记录请参考 [VERIFICATION_RECORD.md](VERIFICATION_RECORD.md) 文件。
+- 协议规格：[`PROTOCOL_SPEC.md`](PROTOCOL_SPEC.md)
+- 并发模型：[`CONCURRENCY_MODEL.md`](CONCURRENCY_MODEL.md)
+- 证据链（基线）：[`EVIDENCE_CHAIN.md`](EVIDENCE_CHAIN.md)
+- 证据链（Gateway 优化）：[`EVIDENCE_CHAIN_2.md`](EVIDENCE_CHAIN_2.md)
+- 验证记录（基线）：[`VERIFICATION_RECORD.md`](VERIFICATION_RECORD.md)
+- 验证记录（Main -> Gateway 改造）：[`VERIFICATION_RECORD_2.md`](VERIFICATION_RECORD_2.md)
 
 ## AI 辅助开发说明
 
-本项目使用了AI辅助开发，具体范围如下：
+本项目使用了 AI 辅助开发，主要包括：
 
-### AI 辅助范围
-1. **协议规格设计**：使用AI辅助设计协议规格，包括消息定义、流程图和状态机
-2. **代码生成**：使用AI生成初始代码框架，包括网关服务、客户端和WebSocket处理器
-3. **并发模型设计**：使用AI辅助设计并发模型图
-4. **文档编写**：使用AI辅助编写项目文档，包括协议规格、证据链和验证记录
+1. **协议规格设计**：消息定义、流程图、状态机草案
+2. **代码框架生成**：网关、客户端与处理器基础代码
+3. **并发模型辅助**：并发路径与线程模型梳理
+4. **文档编写辅助**：证据链、验证记录、说明文档初稿
 
-### 人工改动点
-1. **代码优化**：对AI生成的代码进行优化，包括背压策略的实现和错误处理
-2. **性能测试**：设计并执行性能测试，收集和分析测试数据
-3. **文档完善**：对AI生成的文档进行完善和修正，确保内容准确完整
-4. **脚本创建**：创建启动和测试脚本，方便项目运行和验证
+人工工作重点包括：
+
+1. **代码优化**：背压闭环、错误语义、并发安全改造
+2. **性能测试**：压测与慢客户端场景验证
+3. **脚本与指标**：执行脚本与日志指标统计落地
+4. **文档校验**：对 AI 初稿进行修订和事实对齐
 
 ## 验收标准
 
-本项目满足以下验收标准：
-
-1. **正常流程**：START -> TOKEN* -> DONE 能够顺利执行
-2. **慢客户端场景**：能够稳定复现慢客户端场景，触发ERROR，且错误终止语义明确
-3. **可观测性**：结构化日志与关键指标对齐且完整
-4. **执行脚本**：4个执行脚本能够重复执行，且输出可信的对比记录
+1. **正常流程**：START -> TOKEN* -> DONE 可稳定执行
+2. **慢客户端场景**：可复现慢消费并触发合理背压/错误终态
+3. **可观测性**：结构化日志字段与核心指标可对齐
+4. **可重复验证**：脚本可重复执行并输出可比对结果
 
 ## 总结
 
-本项目实现了一个极简的 Agent Gateway 控制面协议，验证了协议的正确性和系统的稳定性。通过背压策略和线程池管理，系统能够在不同负载下保持稳定，同时提供良好的可观测性。
-
-未来可以考虑进一步优化背压策略，例如根据客户端的历史表现动态调整队列大小，或者实现更精细的流量控制机制，以在系统稳定性和客户端体验之间取得更好的平衡。
+本项目实现并保留了 Main（基线）与 Gateway（优化）两套网关实现，便于教学与对比验证。
+通过背压策略、线程池治理与结构化日志，系统可在不同负载下保持可观测和可分析。
+后续可继续优化动态限流与更细粒度流控，以平衡系统稳定性与客户端体验。

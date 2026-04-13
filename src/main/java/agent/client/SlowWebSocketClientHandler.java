@@ -7,40 +7,34 @@ import java.time.Instant;
 
 public class SlowWebSocketClientHandler extends WebSocketClientHandler {
 
+    private final long delayMs;
+
     public SlowWebSocketClientHandler(WebSocketClientHandshaker handshaker) {
+        this(handshaker, 1000L);
+    }
+
+    public SlowWebSocketClientHandler(WebSocketClientHandshaker handshaker, long delayMs) {
         super(handshaker);
+        this.delayMs = delayMs;
     }
 
     @Override
     public void channelRead0(ChannelHandlerContext ctx, Object msg) {
+        // Keep base handshake flow so handshakeFuture() can be completed correctly.
         if (!handshaker.isHandshakeComplete()) {
-            handshaker.finishHandshake(ctx.channel(), (FullHttpResponse) msg);
-            System.out.println("Slow WebSocket Client connected!");
+            super.channelRead0(ctx, msg);
             return;
         }
 
-        if (msg instanceof FullHttpResponse) {
-            FullHttpResponse response = (FullHttpResponse) msg;
-            throw new IllegalStateException(
-                    "Unexpected FullHttpResponse (getStatus=" + response.status() + ")");
+        // Delay text-frame processing to emulate a slow consumer.
+        if (msg instanceof TextWebSocketFrame && delayMs > 0) {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
 
-        WebSocketFrame frame = (WebSocketFrame) msg;
-        if (frame instanceof TextWebSocketFrame) {
-            TextWebSocketFrame textFrame = (TextWebSocketFrame) frame;
-            System.out.printf("ts=%s event=client_receive message=%s%n", Instant.now(), textFrame.text());
-            
-            // 故意减慢处理速度，模拟慢客户端
-            try {
-                Thread.sleep(1000); // 每次处理消息后休眠1秒
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        } else if (frame instanceof PongWebSocketFrame) {
-            System.out.println("WebSocket Client received pong");
-        } else if (frame instanceof CloseWebSocketFrame) {
-            System.out.println("WebSocket Client received closing");
-            ctx.close();
-        }
+        super.channelRead0(ctx, msg);
     }
 }

@@ -27,11 +27,13 @@ public class SlowClient {
 
     private static final String SERVER_URI = "ws://localhost:8080/ws";
     private static final ObjectMapper mapper = new ObjectMapper();
+    private static final long DEFAULT_DELAY_MS = 1200L;
 
     public static void main(String[] args) throws Exception {
         String sessionId = "s-" + UUID.randomUUID().toString().substring(0, 8);
         String reqId = "r-" + UUID.randomUUID();
         String prompt = args.length > 0 ? args[0] : "Hello, CSD Lab!";
+        long delayMs = args.length > 1 ? Long.parseLong(args[1]) : DEFAULT_DELAY_MS;
 
         // 构建START消息
         Map<String, Object> startMessage = Map.of(
@@ -45,11 +47,12 @@ public class SlowClient {
 
         // 记录发送日志
         System.out.printf(
-                "ts=%s event=client_send type=START session=%s req=%s bytes=%d%n",
+                "ts=%s event=client_send type=START session=%s req=%s bytes=%d slowDelayMs=%d%n",
                 Instant.now(),
                 sessionId,
                 reqId,
-                payload.length()
+                payload.length(),
+                delayMs
         );
 
         // 连接WebSocket服务器
@@ -75,20 +78,7 @@ public class SlowClient {
                              new DefaultHttpHeaders()
                      );
 
-                     // Reuse base handshake flow, then inject slow-consume delay on text frames.
-                     pipeline.addLast(new WebSocketClientHandler(handshaker) {
-                         @Override
-                         public void channelRead0(io.netty.channel.ChannelHandlerContext ctx, Object msg) {
-                             super.channelRead0(ctx, msg);
-                             if (msg instanceof TextWebSocketFrame) {
-                                 try {
-                                     Thread.sleep(1000);
-                                 } catch (InterruptedException e) {
-                                     Thread.currentThread().interrupt();
-                                 }
-                             }
-                         }
-                     });
+                     pipeline.addLast(new SlowWebSocketClientHandler(handshaker, delayMs));
                  }
              });
 
@@ -99,8 +89,8 @@ public class SlowClient {
             // 发送START消息（握手完成后）
             ch.writeAndFlush(new TextWebSocketFrame(payload)).sync();
 
-            // 等待服务器响应
-            ch.closeFuture().await(10000);
+            // 慢客户端需要更长窗口完成消费。
+            ch.closeFuture().await(30000);
 
         } finally {
             group.shutdownGracefully();
