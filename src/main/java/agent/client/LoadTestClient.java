@@ -25,67 +25,67 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class LoadTestClient {
 
     private static final String SERVER_URI = "ws://localhost:8080/ws";
     private static final ObjectMapper mapper = new ObjectMapper();
-    private static final int CONCURRENT_CLIENTS = 10;
+
+    // Defaults tuned to trigger Main.route overloaded=true more reliably.
+    private static final int DEFAULT_CONCURRENT_CLIENTS = 40;
+    private static final int DEFAULT_REQUESTS_PER_CLIENT = 3;
+    private static final int DEFAULT_HOLD_MS = 4000;
 
     public static void main(String[] args) throws Exception {
-        ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_CLIENTS);
-        CountDownLatch latch = new CountDownLatch(CONCURRENT_CLIENTS);
+        int concurrentClients = readArg(args, 0, DEFAULT_CONCURRENT_CLIENTS);
+        int requestsPerClient = readArg(args, 1, DEFAULT_REQUESTS_PER_CLIENT);
+        int holdMs = readArg(args, 2, DEFAULT_HOLD_MS);
+
+        ExecutorService executor = Executors.newFixedThreadPool(concurrentClients);
+        CountDownLatch ready = new CountDownLatch(concurrentClients);
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(concurrentClients);
+        AtomicInteger sendFailures = new AtomicInteger(0);
 
         long startTime = System.currentTimeMillis();
 
-        for (int i = 0; i < CONCURRENT_CLIENTS; i++) {
+        for (int i = 0; i < concurrentClients; i++) {
             final int clientId = i;
             executor.submit(() -> {
                 try {
-                    runClient(clientId);
+                    runClient(clientId, requestsPerClient, holdMs, ready, startGate);
                 } catch (Exception e) {
+                    sendFailures.incrementAndGet();
                     e.printStackTrace();
                 } finally {
-                    latch.countDown();
+                    done.countDown();
                 }
             });
         }
 
-        latch.await(30, TimeUnit.SECONDS);
+        ready.await(30, TimeUnit.SECONDS);
+        System.out.printf("ts=%s event=load_test_gate_open clients=%d req_per_client=%d hold_ms=%d%n",
+                Instant.now(), concurrentClients, requestsPerClient, holdMs);
+        startGate.countDown();
+
+        done.await(60, TimeUnit.SECONDS);
         long endTime = System.currentTimeMillis();
 
-        System.out.printf("ts=%s event=load_test_complete clients=%d duration_ms=%d%n",
-                Instant.now(), CONCURRENT_CLIENTS, endTime - startTime);
+        System.out.printf("ts=%s event=load_test_complete clients=%d req_per_client=%d total_req=%d failures=%d duration_ms=%d%n",
+                Instant.now(), concurrentClients, requestsPerClient, concurrentClients * requestsPerClient,
+                sendFailures.get(), endTime - startTime);
 
         executor.shutdown();
     }
 
-    private static void runClient(int clientId) throws Exception {
-        String sessionId = "s-" + UUID.randomUUID().toString().substring(0, 8);
-        String reqId = "r-" + UUID.randomUUID();
-        String prompt = "Load test client " + clientId;
-
-        // 构建START消息
-        Map<String, Object> startMessage = Map.of(
-                "type", "START",
-                "sessionId", sessionId,
-                "reqId", reqId,
-                "prompt", prompt
-        );
-
-        String payload = mapper.writeValueAsString(startMessage);
-
-        // 记录发送日志
-        System.out.printf(
-                "ts=%s event=client_send type=START session=%s req=%s client_id=%d bytes=%d%n",
-                Instant.now(),
-                sessionId,
-                reqId,
-                clientId,
-                payload.length()
-        );
-
-        // 连接WebSocket服务器
+    private static void runClient(
+            int clientId,
+            int requestsPerClient,
+            int holdMs,
+            CountDownLatch ready,
+            CountDownLatch startGate
+    ) throws Exception {
         URI uri = new URI(SERVER_URI);
         EventLoopGroup group = new NioEventLoopGroup();
 
@@ -115,14 +115,47 @@ public class LoadTestClient {
             WebSocketClientHandler handler = (WebSocketClientHandler) ch.pipeline().last();
             handler.handshakeFuture().sync();
 
-            // 发送START消息
-            ch.writeAndFlush(new TextWebSocketFrame(payload));
+            // Wait until most clients are connected, then burst START together.
+            ready.countDown();
+            startGate.await(10, TimeUnit.SECONDS);
 
-            // 等待服务器响应
-            Thread.sleep(2000);
+            for (int i = 0; i < requestsPerClient; i++) {
+                String sessionId = "s-" + UUID.randomUUID().toString().substring(0, 8);
+                String reqId = "r-" + UUID.randomUUID();
+                String prompt = "Load test client " + clientId + " req " + i;
 
+                Map<String, Object> startMessage = Map.of(
+                        "type", "START",
+                        "sessionId", sessionId,
+                        "reqId", reqId,
+                        "prompt", prompt
+                );
+                String payload = mapper.writeValueAsString(startMessage);
+
+                System.out.printf(
+                        "ts=%s event=client_send type=START session=%s req=%s client_id=%d req_idx=%d bytes=%d%n",
+                        Instant.now(), sessionId, reqId, clientId, i, payload.length()
+                );
+
+                ChannelFuture cf = ch.writeAndFlush(new TextWebSocketFrame(payload));
+                cf.sync();
+            }
+
+            // Keep connection alive to maintain pressure while server is processing.
+            Thread.sleep(holdMs);
         } finally {
             group.shutdownGracefully();
+        }
+    }
+
+    private static int readArg(String[] args, int index, int defaultValue) {
+        if (args.length <= index) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(args[index]);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
         }
     }
 }

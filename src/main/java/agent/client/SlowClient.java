@@ -13,6 +13,7 @@ import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,28 +66,41 @@ public class SlowClient {
                      ChannelPipeline pipeline = ch.pipeline();
                      pipeline.addLast(new HttpClientCodec());
                      pipeline.addLast(new HttpObjectAggregator(65536));
-                     // 使用慢客户端处理器，故意减慢消息处理速度
-                     pipeline.addLast(new SlowWebSocketClientHandler(
-                             WebSocketClientHandshakerFactory.newHandshaker(
-                                     uri,
-                                     WebSocketVersion.V13,
-                                     null,
-                                     true,
-                                     new DefaultHttpHeaders()
-                             )
-                     ));
+
+                     WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
+                             uri,
+                             WebSocketVersion.V13,
+                             null,
+                             true,
+                             new DefaultHttpHeaders()
+                     );
+
+                     // Reuse base handshake flow, then inject slow-consume delay on text frames.
+                     pipeline.addLast(new WebSocketClientHandler(handshaker) {
+                         @Override
+                         public void channelRead0(io.netty.channel.ChannelHandlerContext ctx, Object msg) {
+                             super.channelRead0(ctx, msg);
+                             if (msg instanceof TextWebSocketFrame) {
+                                 try {
+                                     Thread.sleep(1000);
+                                 } catch (InterruptedException e) {
+                                     Thread.currentThread().interrupt();
+                                 }
+                             }
+                         }
+                     });
                  }
              });
 
             Channel ch = b.connect(uri.getHost(), uri.getPort()).sync().channel();
-            SlowWebSocketClientHandler handler = (SlowWebSocketClientHandler) ch.pipeline().last();
+            WebSocketClientHandler handler = (WebSocketClientHandler) ch.pipeline().last();
             handler.handshakeFuture().sync();
 
-            // 发送START消息
-            ch.writeAndFlush(new TextWebSocketFrame(payload));
+            // 发送START消息（握手完成后）
+            ch.writeAndFlush(new TextWebSocketFrame(payload)).sync();
 
             // 等待服务器响应
-            Thread.sleep(10000);
+            ch.closeFuture().await(10000);
 
         } finally {
             group.shutdownGracefully();
